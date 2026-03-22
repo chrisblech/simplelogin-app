@@ -66,7 +66,7 @@
         <form method="post">
           <input type="hidden" name="form-name" value="create" />
           {{ new_contact_form.csrf_token }}
-          {{ new_contact_form.email(class="form-control", placeholder="First Last <email@example.com>", autofocus=True) }}
+          {{ new_contact_form.email(class="form-control", id="alias-contact-email", placeholder="First Last <email@example.com>", autofocus=True) }}
           {{ render_field_errors(new_contact_form.email) }}
           <div class="small-text">Where do you want to send the email?</div>
           {% if can_create_contacts %}
@@ -217,6 +217,77 @@
 {% block script %}
 
   <script>
+    (function () {
+      // Normalize common clipboard formats into "Name <mail@domain.tld>" for the contact creation input.
+      // Examples accepted:
+      // - "Name - mail(at)domain.tld"
+      // - "Name - mail at domain.tld"
+      // Also handles en/em dashes.
+
+      const input = document.getElementById("alias-contact-email");
+      if (!input) return;
+
+      function normalizeEmailish(s) {
+        if (!s) return s;
+        let out = String(s).trim();
+        // Convert (at) or [at] or {at}
+        out = out.replace(/\s*[\(\[\{]\s*at\s*[\)\]\}]\s*/gi, "@");
+        // Convert " at " surrounded by whitespace
+        out = out.replace(/\s+at\s+/gi, "@");
+        // Remove whitespace around '@'
+        out = out.replace(/\s*@\s*/g, "@");
+        // Remove stray spaces
+        out = out.replace(/\s+/g, "");
+        return out;
+      }
+
+      function toNameAngleFormat(name, email) {
+        const n = String(name || "").trim().replace(/\s+/g, " ");
+        const e = normalizeEmailish(email);
+        if (!n || !e) return null;
+        if (!e.includes("@")) return null;
+        return `${n} <${e}>`;
+      }
+
+      function transformClipboardText(text) {
+        if (!text) return null;
+        const t = String(text).trim();
+
+        // If it already looks like "Name <email@domain>", leave it.
+        if (/^.+<[^<>@\s]+@[^<>\s]+>\s*$/.test(t)) return null;
+
+        // Try "Name - email" with hyphen/en-dash/em-dash.
+        const m = t.match(/^(.+?)\s*[-–—]\s*(.+)$/);
+        if (m) {
+          const formatted = toNameAngleFormat(m[1], m[2]);
+          if (formatted) return formatted;
+        }
+
+        return null;
+      }
+
+      input.addEventListener("paste", function (e) {
+        const cd = e.clipboardData || window.clipboardData;
+        if (!cd) return;
+
+        const pasted = cd.getData("text/plain");
+        const transformed = transformClipboardText(pasted);
+        if (!transformed) return;
+
+        e.preventDefault();
+        // Insert transformed text at cursor position (or replace selection).
+        const start = input.selectionStart ?? input.value.length;
+        const end = input.selectionEnd ?? input.value.length;
+        input.value = input.value.slice(0, start) + transformed + input.value.slice(end);
+        const pos = start + transformed.length;
+        try {
+          input.setSelectionRange(pos, pos);
+        } catch (err) {
+          // ignore
+        }
+      });
+    })();
+
     $(".delete-forward-email").on("click", function (e) {
       let that = $(this);
 
