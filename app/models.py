@@ -250,6 +250,7 @@ class AuditLogActionEnum(EnumE):
     disable_mailbox = 17
     enable_mailbox = 18
     change_default_mailbox = 19
+    upgrade_lifetime = 20
 
 
 class Phase(EnumE):
@@ -3911,6 +3912,16 @@ class AdminAuditLog(Base):
         cls.create(
             admin_user_id=admin_user_id,
             action=AuditLogActionEnum.enable_user.value,
+            model="User",
+            model_id=user_id,
+            data={},
+        )
+
+    @classmethod
+    def upgrade_lifetime(cls, admin_user_id: int, user_id: int):
+        cls.create(
+            admin_user_id=admin_user_id,
+            action=AuditLogActionEnum.upgrade_lifetime.value,
             model="User",
             model_id=user_id,
             data={},
