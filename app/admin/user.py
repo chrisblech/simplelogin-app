@@ -22,6 +22,9 @@ from app.models import (
     Subscription,
     AppleSubscription,
     AdminAuditLog,
+    AuditLogActionEnum,
+    PartnerSubscription,
+    PartnerUser,
     PADDLE_SUBSCRIPTION_GRACE_DAYS,
 )
 from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
@@ -283,5 +286,86 @@ class UserAdmin(SLModelView):
     def clean_delete_on(self, ids):
         for user in User.filter(User.id.in_(ids)):
             user.delete_on = None
+
+        Session.commit()
+
+    @action(
+        "upgrade_lifetime",
+        "Upgrade to Lifetime",
+        "Are you sure you want to give the selected users a Lifetime license?",
+    )
+    def action_upgrade_lifetime(self, ids):
+        for user in User.filter(User.id.in_(ids)).all():
+            if user.lifetime:
+                flash(f"user {user} already has a lifetime license", "warning")
+                continue
+
+            sub: Subscription = user.get_paddle_subscription()
+            if sub and not sub.cancelled:
+                flash(
+                    f"user {user} already has a Paddle license, they have to cancel it first",
+                    "warning",
+                )
+                continue
+
+            apple_sub: AppleSubscription = AppleSubscription.get_by(user_id=user.id)
+            if apple_sub and apple_sub.is_valid():
+                flash(
+                    f"user {user} already has a Apple subscription, they have to cancel it first",
+                    "warning",
+                )
+                continue
+
+            partner_sub = (
+                Session.query(PartnerSubscription)
+                .join(
+                    PartnerUser, PartnerUser.id == PartnerSubscription.partner_user_id
+                )
+                .filter(
+                    PartnerUser.user_id == user.id,
+                    PartnerSubscription.lifetime == True,  # noqa: E712
+                )
+                .first()
+            )
+            if partner_sub is not None:
+                flash(
+                    f"user {user} already has a lifetime license via a partner subscription",
+                    "warning",
+                )
+                continue
+
+            user.lifetime = True
+            AdminAuditLog.upgrade_lifetime(current_user.id, user.id)
+            EventDispatcher.send_event(
+                user=user,
+                content=EventContent(user_plan_change=UserPlanChanged(lifetime=True)),
+            )
+            flash(f"{user} is upgraded to lifetime", "success")
+
+        Session.commit()
+
+    @action(
+        "delete_user",
+        "Delete user",
+        "This will PERMANENTLY delete the selected users and all their data "
+        "(aliases, mailboxes, subscriptions, ...). This cannot be undone. "
+        "Are you sure?",
+    )
+    def action_delete_user(self, ids):
+        for user in User.filter(User.id.in_(ids)).all():
+            if user.is_admin:
+                flash(f"Cannot delete admin user {user}", "error")
+                continue
+
+            user_email = user.email
+            AdminAuditLog.create(
+                admin_user_id=current_user.id,
+                model="User",
+                model_id=user.id,
+                action=AuditLogActionEnum.delete_object.value,
+                data={"email": user_email, "deleted_by": current_user.email},
+            )
+            User.delete(user.id)
+            flash(f"User {user_email} has been permanently deleted", "success")
 
         Session.commit()
