@@ -25,7 +25,6 @@ MAIN_BRANCH="master"
 # order. Edit this list whenever the set of features to ship changes.
 DEPLOY_BRANCHES=(
   "feature/user-blacklists"
-  "fix_oidc_scopes"
   "fix/uv-lock-protobuf-conflict"
   "feature/admin-user-bulk-delete-lifetime"
   "feature/admin-create-user"
