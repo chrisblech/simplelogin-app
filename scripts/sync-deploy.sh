@@ -57,9 +57,24 @@ require_clean_worktree() {
   fi
 }
 
+# --- Re-exec from outside the repo ---------------------------------------------
+#
+# This script only exists on the build branch, and it checks out other branches
+# while running. bash reads scripts incrementally, so it would vanish (or change)
+# under its own feet. Copy it next to the repo and run that copy instead.
+
+if [[ -z "${SYNC_DEPLOY_REPO:-}" ]]; then
+  SYNC_DEPLOY_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)"
+  SELF_COPY="$(dirname "$SYNC_DEPLOY_REPO")/sync-deploy.sh"
+  cp "${BASH_SOURCE[0]}" "$SELF_COPY"
+  chmod +x "$SELF_COPY"
+  log "Re-running from $SELF_COPY"
+  SYNC_DEPLOY_REPO="$SYNC_DEPLOY_REPO" exec "$SELF_COPY" "$@"
+fi
+
 # --- Preconditions -------------------------------------------------------------
 
-cd "$(git rev-parse --show-toplevel)"
+cd "$SYNC_DEPLOY_REPO"
 require_clean_worktree
 
 if ! git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1; then
