@@ -7,27 +7,30 @@ from flask_admin.form import SecureForm
 from flask_login import current_user
 
 from app.abuser import mark_user_as_abuser, unmark_as_abusive_user
+from app.abuser_utils import check_if_abuser_email
 from app.admin.base import (
     SLModelView,
     _admin_date_formatter,
     _user_upgrade_channel_formatter,
 )
 from app.db import Session
+from app.email_utils import email_can_be_used_as_mailbox, personal_email_already_used
 from app.events.event_dispatcher import EventDispatcher
 from app.events.generated.event_pb2 import EventContent, UserPlanChanged
 from app.models import (
-    User,
-    ManualSubscription,
-    Fido,
-    Subscription,
-    AppleSubscription,
+    PADDLE_SUBSCRIPTION_GRACE_DAYS,
     AdminAuditLog,
+    AppleSubscription,
     AuditLogActionEnum,
+    Fido,
+    ManualSubscription,
     PartnerSubscription,
     PartnerUser,
-    PADDLE_SUBSCRIPTION_GRACE_DAYS,
+    Subscription,
+    User,
 )
-from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
+from app.user_audit_log_utils import UserAuditLogAction, emit_user_audit_log
+from app.utils import canonicalize_email
 
 
 def manual_upgrade(way: str, ids: list[int], is_giveaway: bool):
@@ -111,6 +114,8 @@ class UserAdmin(SLModelView):
         "profile_picture",
     ]
     can_edit = False
+    can_create = True
+    form_columns = ["email", "name"]
 
     def scaffold_list_columns(self):
         ret = super().scaffold_list_columns()
@@ -122,6 +127,51 @@ class UserAdmin(SLModelView):
         "created_at": _admin_date_formatter,
         "updated_at": _admin_date_formatter,
     }
+
+    def create_model(self, form):
+        """Manually create a user, e.g. when DISABLE_REGISTRATION is set and
+        self-registration via /register is unavailable.
+
+        Goes through the same User.create() as self-registration and the
+        OIDC/partner login "create on first sign-in" paths, so the user gets
+        the same default mailbox, newsletter alias, trial period, etc., and
+        - like those other non-self-registration paths - is activated right
+        away instead of waiting on an activation email.
+        """
+        email = canonicalize_email(form.email.data)
+        name = (form.name.data or "").strip() or email
+
+        if not email_can_be_used_as_mailbox(email):
+            flash("This email address cannot be used as a personal inbox.", "error")
+            return False
+
+        if check_if_abuser_email(email):
+            flash("This email address is banned from registration.", "error")
+            return False
+
+        if personal_email_already_used(email):
+            flash(f"Email {email} is already used", "error")
+            return False
+
+        try:
+            user = User.create(email=email, name=name, password="", activated=True)
+            Session.commit()
+        except Exception as ex:
+            flash(f"Failed to create user: {ex}", "error")
+            Session.rollback()
+            return False
+
+        AdminAuditLog.create(
+            admin_user_id=current_user.id,
+            model="User",
+            model_id=user.id,
+            action=AuditLogActionEnum.create_object.value,
+            data={"email": user.email, "created_by": current_user.email},
+        )
+        Session.commit()
+
+        flash(f"User {user.email} has been created", "success")
+        return user
 
     @action(
         "disable_user",
