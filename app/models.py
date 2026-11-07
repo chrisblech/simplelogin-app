@@ -250,7 +250,11 @@ class AuditLogActionEnum(EnumE):
     enable_mailbox = 18
     change_default_mailbox = 19
     delete_mailbox = 20
-    upgrade_lifetime = 21
+
+    # Fork-specific values live at 1000+ so that upstream's sequential
+    # numbering can never collide with them (a duplicate value would silently
+    # become an alias). Stored as int in admin_audit_log.action.
+    upgrade_lifetime = 1000
 
 
 class Phase(EnumE):
