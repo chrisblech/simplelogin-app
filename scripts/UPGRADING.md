@@ -108,10 +108,11 @@ v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
 - Neue Upstream-Migrationen vor dem Deploy ansehen (Extensions wie
   `pg_trgm`, `CREATE INDEX CONCURRENTLY`, Datenmigrationen). Der Preflight
   listet sie gegenüber dem zuletzt deployten Release auf.
-- Sender-Blacklist: der Code prüft seit `203f8dda` per `fullmatch`, der
-  Admin-Hilfetext und die Prod-Daten verwenden aber Such-Muster
-  (`@domain\.tld$`), die damit nie greifen. Stand 2026-11-07 offen, siehe
-  Verlauf.
+- Sender-Blacklist-Muster haben **Such-Semantik** (`re.search`), Anker mit
+  `^`/`$`, z. B. `@domain\.tld$`. Zwischen `203f8dda` (03/2026) und
+  v4.83.5-cb wurde versehentlich per `fullmatch` geprüft, dadurch waren 12
+  von 14 Prod-Mustern wirkungslos; seit `fc6b1698` wieder `search`, durch
+  Tests abgesichert.
 - `ERROR ... Prometheus metrics are not enabled: METRICS_SERVER_PORT is not set`
   in sl-email/sl-job-runner seit v4.83.5 ist nur Info (Upstream loggt das als
   ERROR), solange keine Metriken gewünscht sind.
@@ -122,4 +123,4 @@ v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
 |----------|----------------|
 | v4.82.3  | `fix_oidc_scopes` upstream gemergt, aus Liste entfernt |
 | v4.83.1  | Alembic-Merge (FIDO/Blacklist, Email-Canonical-Indizes); Import-Konflikt admin-create-user manuell im Deploy-Branch |
-| v4.83.5  | Deployt 2026-11-07 via Arcane. Alembic-Merge (partner_user-Indizes), danach Umstellung auf `upgrade heads`; Enum-Kollision 20 → `upgrade_lifetime = 1000` + Daten-Update; Import-Konflikt dauerhaft im Bulk-Branch gelöst; Blacklist-Branch ohne eigene Dependency; `prometheus-client` neu; Tests brauchen Redis; Preflight-Skript + Checks in sync-deploy eingeführt |
+| v4.83.5  | Deployt 2026-11-07 via Arcane. Alembic-Merge (partner_user-Indizes), danach Umstellung auf `upgrade heads`; Enum-Kollision 20 → `upgrade_lifetime = 1000` + Daten-Update; Import-Konflikt dauerhaft im Bulk-Branch gelöst; Blacklist-Branch ohne eigene Dependency; `prometheus-client` neu; Tests brauchen Redis; Preflight-Skript + Checks in sync-deploy eingeführt; Blacklist-Matching zurück auf `search` (Image neu gebaut, gleicher Tag; erster Build war `sha256:5f5ec924…`) |
