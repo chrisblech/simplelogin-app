@@ -15,6 +15,7 @@ from app.admin.base import (
 from app.db import Session
 from app.events.event_dispatcher import EventDispatcher
 from app.events.generated.event_pb2 import EventContent, UserPlanChanged
+from app.models import AuditLogActionEnum, PartnerSubscription, PartnerUser
 from app.models import (
     User,
     ManualSubscription,
@@ -22,9 +23,6 @@ from app.models import (
     Subscription,
     AppleSubscription,
     AdminAuditLog,
-    AuditLogActionEnum,
-    PartnerSubscription,
-    PartnerUser,
     PADDLE_SUBSCRIPTION_GRACE_DAYS,
 )
 from app.user_audit_log_utils import emit_user_audit_log, UserAuditLogAction
