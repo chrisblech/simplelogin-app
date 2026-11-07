@@ -15,7 +15,7 @@ from app.admin.base import (
 from app.db import Session
 from app.events.event_dispatcher import EventDispatcher
 from app.events.generated.event_pb2 import EventContent, UserPlanChanged
-from app.models import AuditLogActionEnum, PartnerSubscription, PartnerUser
+from app.models import PartnerSubscription, PartnerUser
 from app.models import (
     User,
     ManualSubscription,
@@ -356,12 +356,10 @@ class UserAdmin(SLModelView):
                 continue
 
             user_email = user.email
-            AdminAuditLog.create(
-                admin_user_id=current_user.id,
-                model="User",
-                model_id=user.id,
-                action=AuditLogActionEnum.delete_object.value,
-                data={"email": user_email, "deleted_by": current_user.email},
+            AdminAuditLog.delete_user(
+                current_user.id,
+                user.id,
+                {"email": user_email, "deleted_by": current_user.email},
             )
             User.delete(user.id)
             flash(f"User {user_email} has been permanently deleted", "success")

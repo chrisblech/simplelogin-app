@@ -3948,6 +3948,16 @@ class AdminAuditLog(Base):
         )
 
     @classmethod
+    def delete_user(cls, admin_user_id: int, user_id: int, data: dict):
+        cls.create(
+            admin_user_id=admin_user_id,
+            action=AuditLogActionEnum.delete_object.value,
+            model="User",
+            model_id=user_id,
+            data=data,
+        )
+
+    @classmethod
     def clear_delete_on(cls, admin_user_id: int, user_id: int):
         cls.create(
             admin_user_id=admin_user_id,
