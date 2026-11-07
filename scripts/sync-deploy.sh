@@ -30,11 +30,12 @@ DEPLOY_BRANCHES=(
   "feature/admin-create-user"
 )
 
-# Set to 1 once the migration container runs `alembic upgrade heads` (plural);
-# then multiple alembic heads (fork migrations + new upstream migrations) are
-# fine and no merge migration is needed anymore. With `upgrade head`
-# (singular) more than one head makes the migration container fail.
-ALLOW_MULTIPLE_ALEMBIC_HEADS=0
+# 1 = the migration container runs `alembic upgrade heads` (plural; set in
+# /opt/arcane-projects/simplelogin/compose.yaml since v4.83.5-cb), so multiple
+# alembic heads (fork migrations + new upstream migrations) are fine and no
+# merge migration is needed anymore. Set back to 0 if it ever runs
+# `upgrade head` (singular) again - that fails with more than one head.
+ALLOW_MULTIPLE_ALEMBIC_HEADS=1
 
 IMAGE_NAME="reg.hosrv.de/library/sl-app"
 TAG_SUFFIX="-cb"
