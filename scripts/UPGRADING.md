@@ -3,109 +3,108 @@
 Erfahrungswerte aus bisherigen Upgrades dieses Forks auf ein neues
 SimpleLogin-Release. Ergänzt `scripts/sync-deploy.sh` (nur im Branch `build`).
 
-## Ablauf
+## Kurzfassung
 
-1. **Neues Release ermitteln**
-   ```sh
-   git fetch upstream --tags --prune
-   git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --merged upstream/master --sort=-v:refname | head
-   ```
-   (Alte Tags wie `v20220512.02` ignoriert das Skript per Regex.)
-
-2. **Probe-Merge in einem Wegwerf-Worktree**, bevor das Skript läuft:
-   ```sh
-   git worktree add --detach /tmp/wt vX.Y.Z
-   cd /tmp/wt
-   for b in <DEPLOY_BRANCHES in Skript-Reihenfolge>; do
-     git merge --no-ff --no-edit origin/$b || { git status --short; git merge --abort; }
-   done
-   ```
-   Wichtig: das Skript baut den Deploy-Branch bei jedem Lauf per
-   `git checkout -B` neu auf. **Konflikte, die nur im Deploy-Branch gelöst
-   werden, gehen beim nächsten Lauf verloren.**
-
-3. **Konflikte im Feature-Branch lösen**: das Release in den betroffenen
-   Feature-Branch mergen (`Merge upstream vX.Y.Z into <branch>`), dort lösen,
-   Feature-Branch pushen. Danach den Probe-Merge wiederholen, bis alle
-   Branches *in Skript-Reihenfolge* sauber durchlaufen – Konflikte können
-   auch *zwischen* Feature-Branches entstehen, nicht nur mit Upstream.
-
-4. **Prüfen** (auf dem simulierten Deploy-Stand, inkl. Dedupe des
-   doppelten `cachetools`-Eintrags + `uv lock`, wie im Skript):
-   - Alembic hat genau **einen** Head (siehe unten).
-   - `uv lock --check` ok, `protobuf` bleibt 5.x.
-   - `uvx ruff@0.1.5 check .` (Version wie in `.pre-commit-config.yaml`).
-     Bekannte, bereits bestehende `ruff format`-Abweichungen:
-     `app/regex_utils.py`, `app/user_audit_log_utils.py`.
-   - Tests wie in `scripts/run-test.sh`, aber Postgres in Prod-Version und
-     **zusätzlich Redis** (seit v4.83.x brauchen Tests `localhost:6379`):
-     ```sh
-     docker run -d --name sl-test-db -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
-       -e POSTGRES_DB=test -p 127.0.0.1:15432:5432 postgres:17.7
-     docker run -d --name sl-test-redis -p 127.0.0.1:6379:6379 redis:7.4-alpine
-     uv sync --locked
-     CONFIG=tests/test.env uv run alembic upgrade head
-     uv run pytest -c pytest.ci.ini
-     docker rm -f sl-test-db sl-test-redis
-     ```
-
-5. **Skript laufen lassen**: `scripts/sync-deploy.sh` (aus `build`).
-   Danach Image-Tag `vX.Y.Z-cb` in Portainer setzen.
-
-6. **Neue Upstream-Migrationen** vorher ansehen (z. B. benötigte
-   Postgres-Extensions wie `pg_trgm`, `CREATE INDEX CONCURRENTLY`).
-
-## Wiederkehrende Stolperstellen
-
-### Alembic: mehrere Heads (`feature/user-blacklists`)
-Der Blacklist-Branch bringt eigene Migrationen mit. Sobald Upstream neue
-Migrationen hat, gibt es zwei Heads. Lösung: im Blacklist-Branch eine leere
-Merge-Migration mit beiden Heads als `down_revision` anlegen (Vorlage:
-`*_merge_partner_user_indices_with_sender_blacklist.py`). Heads prüfen:
-
-```python
-import re, glob
-revs, downs = {}, set()
-for f in glob.glob("migrations/versions/*.py"):
-    s = open(f).read()
-    revs[re.search(r"^revision\s*=\s*['\"](\w+)", s, re.M).group(1)] = f
-    downs |= set(re.findall(r"['\"](\w+)['\"]", re.search(r"^down_revision\s*=\s*(.+)$", s, re.M).group(1)))
-print([(r, f) for r, f in revs.items() if r not in downs])
+```sh
+scripts/upgrade-preflight.sh --test     # Probelauf: Merges, Checks, Migrationen, Tests
+# ... gemeldete Probleme in den Feature-Branches lösen und pushen,
+#     ggf. vorher lokal prüfen mit: scripts/upgrade-preflight.sh --local --test
+scripts/sync-deploy.sh                  # echter Lauf: Merge, Checks, Push, Image
+# Image-Tag vX.Y.Z-cb in Portainer setzen
 ```
 
-### `uv.lock`
-- `feature/user-blacklists` deklariert `cachetools ~= 5.3.3`, sein `uv.lock`
-  ist absichtlich nicht aktuell. Das Skript entfernt den doppelten Eintrag und
-  lockt neu – dort also **nicht** `uv lock` ausführen (würde protobuf auf
-  3.20 zurückdrehen).
-- `fix/uv-lock-protobuf-conflict`: bei `uv.lock`-Konflikt
-  `git checkout --ours uv.lock && uv lock`, dann prüfen, dass nur die
-  gewollten Pins plus neue Upstream-Pakete im Diff sind.
+## Werkzeuge
 
-### `AuditLogActionEnum`-Kollisionen (`feature/admin-user-bulk-delete-lifetime`)
-Der Branch ergänzt Enum-Werte, Upstream ebenfalls. Werte werden als Integer
-in `admin_audit_log.action` gespeichert. Bei Kollision bekommt Upstream den
-Wert, unserer wird hochgezählt – **und bestehende Prod-Zeilen müssen
-umnummeriert werden**, sonst werden sie falsch angezeigt.
+| Datei | Zweck |
+|-------|-------|
+| `scripts/sync-deploy.sh` | Synchronisiert `master`, baut `deploy/<tag>-cb` aus `DEPLOY_BRANCHES`, prüft, pusht, baut + pusht das Image. Einzige Quelle für die Branch-Liste. |
+| `scripts/upgrade-preflight.sh` | Probelauf in einem Wegwerf-Worktree. Ändert keine Branches, pusht nichts. Meldet **alle** Probleme auf einmal: Konflikte je Branch (mit Upstream bzw. zwischen eigenen Branches), uv.lock, Enum-Kollisionen, Alembic-Heads, ruff, neue Migrationen/Abhängigkeiten; mit `--test` zusätzlich Alembic-Migration + pytest gegen Postgres 17.7 + Redis. `--local` nutzt die lokalen statt der `origin`-Branches, `--keep` behält den Worktree. |
+| `scripts/upgrade_checks.py` | Gemeinsame Checks (nur stdlib): `dedupe-deps`, `alembic-heads`, `enum-dupes [REF]`. |
 
-- v4.83.5: Upstream `delete_mailbox = 20`, unser `upgrade_lifetime` → 21.
-  Einmalig beim Deploy (vor der ersten Mailbox-Löschung über das Admin-Panel):
-  ```sql
-  UPDATE admin_audit_log SET action = 21 WHERE action = 20;
-  ```
+`sync-deploy.sh` erledigt automatisch:
+- Konflikte, die **nur `uv.lock`** betreffen: eigene Seite nehmen + `uv lock`.
+- Doppelte Einträge in `pyproject.toml` entfernen + neu locken (Sicherheitsnetz).
+- **Vor dem Push** wird abgebrochen bei: inkonsistentem `uv.lock`, neuen
+  doppelten Enum-Werten (gegenüber dem Upstream-Tag), mehr als einem
+  Alembic-Head (außer `ALLOW_MULTIPLE_ALEMBIC_HEADS=1`).
+- Bei echten Konflikten bricht es mit Hinweis ab. **Nie im Deploy-Branch
+  lösen**: Er wird bei jedem Lauf per `git checkout -B` neu aufgebaut, die
+  Lösung wäre beim nächsten Mal weg.
 
-### `app/admin/user.py`-Importe (Bulk-Branch vs. `feature/admin-create-user`)
-`admin-create-user` sortiert den `from app.models import (...)`-Block um.
-Der Bulk-Branch importiert seine zusätzlichen Modelle deshalb in einer
-**separaten Zeile vor dem Block** und lässt den Upstream-Block unverändert;
-Audit-Logging läuft über `AdminAuditLog`-Classmethods (`upgrade_lifetime`,
+## Konflikte lösen
+
+Das Release in den betroffenen Feature-Branch mergen
+(`Merge upstream vX.Y.Z into <branch>`), dort lösen, testen, pushen.
+Konflikte *zwischen* eigenen Branches (Preflight: „conflicts with an earlier
+deploy branch“) so lösen, dass die Branches sich nicht mehr in denselben
+Zeilen berühren (Beispiel: Imports, siehe unten).
+
+## Strukturelle Regeln (damit Konflikte gar nicht erst entstehen)
+
+### Enum-Werte des Forks ab 1000
+Upstream nummeriert z. B. `AuditLogActionEnum` fortlaufend. Ein gleicher Wert
+an *anderer* Stelle erzeugt **keinen** Git-Konflikt, sondern Python macht
+still einen Alias daraus (falsche Audit-Logs). Deshalb:
+- Eigene Enum-Werte immer im Bereich **1000+** vergeben.
+- `upgrade_checks.py enum-dupes <tag>` prüft das (in beiden Skripten aktiv);
+  Upstreams eigene, beabsichtigte Aliase werden ignoriert.
+
+Historie: bis v4.83.1 war `upgrade_lifetime = 20`; v4.83.5 belegt 20 mit
+`delete_mailbox`. Seit v4.83.5 ist `upgrade_lifetime = 1000`. Einmalig beim
+Deploy von v4.83.5-cb (bevor jemand über das Admin-Panel eine Mailbox löscht):
+```sql
+UPDATE admin_audit_log SET action = 1000 WHERE action = 20;
+```
+
+### Abhängigkeiten nur in `fix/uv-lock-protobuf-conflict`
+Nur dieser Branch ändert `pyproject.toml`/`uv.lock` (protobuf 5.x,
+cachetools, google-api-client). Andere Feature-Branches fügen keine eigenen
+Deklarationen hinzu, wenn das Paket schon transitiv vorhanden ist (so macht
+es Upstream mit `cachetools` auch). Bei `uv.lock`-Konflikt in diesem Branch:
+`git checkout --ours uv.lock && uv lock`, prüfen, dass protobuf 5.x bleibt.
+Dieser Branch wäre ein guter Kandidat für einen Upstream-PR (Issue #2797);
+nach Übernahme durch Upstream aus `DEPLOY_BRANCHES` entfernen.
+
+### Imports in `app/admin/user.py`
+`feature/admin-create-user` sortiert den `from app.models import (...)`-Block
+um. Andere Branches ändern diesen Block nicht, sondern importieren in einer
+**eigenen Zeile davor** (`from app.models import PartnerSubscription, PartnerUser`)
+und loggen über `AdminAuditLog`-Classmethods (`upgrade_lifetime`,
 `delete_user`), damit `AuditLogActionEnum` nicht doppelt importiert wird
-(ruff F811). Seit v4.83.5 so umgesetzt; bis v4.83.1 wurde dieser Konflikt
-jedes Mal von Hand im Deploy-Branch gelöst.
+(ruff F811).
+
+### Alembic: mehrere Heads
+`feature/user-blacklists` hat eigene Migrationen. Mit jedem Upstream-Release,
+das neue Migrationen mitbringt, entsteht ein zweiter Head. Prod führt
+Migrationen im Container `sl-migration` mit `alembic upgrade head` (Singular)
+aus; bei zwei Heads schlägt das fehl.
+
+- **Empfohlen (einmalig):** im Portainer-Stack beim `sl-migration`-Command
+  `alembic upgrade head` → `alembic upgrade heads` ändern und in
+  `sync-deploy.sh` `ALLOW_MULTIPLE_ALEMBIC_HEADS=1` setzen. Dann braucht es
+  keine Merge-Migrationen mehr. `upgrade heads` funktioniert auch bei nur
+  einem Head, die Umstellung ist also jederzeit gefahrlos.
+- **Bis dahin:** im Blacklist-Branch eine leere Merge-Migration mit beiden
+  Heads als `down_revision` anlegen (Vorlage:
+  `*_merge_partner_user_indices_with_sender_blacklist.py`). Merge-Migrationen
+  dürfen nicht automatisch im Deploy-Branch erzeugt werden: Ihre Revision
+  landet in `alembic_version` und muss im nächsten Deploy weiter existieren.
 
 ### Bereits upstream gemergte Branches
 Wenn ein eigener Fix upstream übernommen wurde (z. B. `fix_oidc_scopes` in
 v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
+
+## Sonstiges
+
+- Tests brauchen seit v4.83.x zusätzlich **Redis** auf `localhost:6379`
+  (`scripts/run-test.sh` startet nur Postgres); der Preflight startet beides.
+- Bekannte, bereits bestehende `ruff format`-Abweichungen aus dem
+  Blacklist-Branch: `app/regex_utils.py`, `app/user_audit_log_utils.py`.
+- Neue Upstream-Migrationen vor dem Deploy ansehen (Extensions wie
+  `pg_trgm`, `CREATE INDEX CONCURRENTLY`, Datenmigrationen). Der Preflight
+  listet sie gegenüber dem zuletzt deployten Release auf.
+- Sender-Blacklist-Muster werden per `fullmatch` geprüft: `.*@spam\.test`,
+  nicht `@spam\.test$`.
 
 ## Verlauf
 
@@ -113,4 +112,4 @@ v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
 |----------|----------------|
 | v4.82.3  | `fix_oidc_scopes` upstream gemergt, aus Liste entfernt |
 | v4.83.1  | Alembic-Merge (FIDO/Blacklist, Email-Canonical-Indizes); Import-Konflikt admin-create-user manuell im Deploy-Branch |
-| v4.83.5  | Alembic-Merge (partner_user-Indizes); Enum-Kollision 20 → `upgrade_lifetime = 21` + Daten-Update; Import-Konflikt dauerhaft im Bulk-Branch gelöst; `prometheus-client` neu; Tests brauchen Redis |
+| v4.83.5  | Alembic-Merge (partner_user-Indizes); Enum-Kollision 20 → `upgrade_lifetime = 1000` + Daten-Update; Import-Konflikt dauerhaft im Bulk-Branch gelöst; Blacklist-Branch ohne eigene Dependency; `prometheus-client` neu; Tests brauchen Redis; Preflight-Skript + Checks in sync-deploy eingeführt |

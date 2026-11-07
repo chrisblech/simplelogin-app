@@ -30,6 +30,12 @@ DEPLOY_BRANCHES=(
   "feature/admin-create-user"
 )
 
+# Set to 1 once the migration container runs `alembic upgrade heads` (plural);
+# then multiple alembic heads (fork migrations + new upstream migrations) are
+# fine and no merge migration is needed anymore. With `upgrade head`
+# (singular) more than one head makes the migration container fail.
+ALLOW_MULTIPLE_ALEMBIC_HEADS=0
+
 IMAGE_NAME="reg.hosrv.de/library/sl-app"
 TAG_SUFFIX="-cb"
 PLATFORM="linux/amd64"
@@ -51,6 +57,12 @@ done
 log() { printf '\n\033[1;34m==>\033[0m %s\n' "$1"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit 1; }
 
+find_uv() {
+  UV_BIN="$(command -v uv || true)"
+  [[ -n "$UV_BIN" ]] || UV_BIN="$HOME/.local/bin/uv"
+  [[ -x "$UV_BIN" ]] || die "uv not found (checked PATH and \$HOME/.local/bin/uv)."
+}
+
 require_clean_worktree() {
   if [[ -n "$(git status --porcelain)" ]]; then
     die "Working tree is not clean. Commit or stash your changes first."
@@ -61,16 +73,21 @@ require_clean_worktree() {
 #
 # This script only exists on the build branch, and it checks out other branches
 # while running. bash reads scripts incrementally, so it would vanish (or change)
-# under its own feet. Copy it next to the repo and run that copy instead.
+# under its own feet. Copy it (and its Python helper) next to the repo and run
+# that copy instead.
 
 if [[ -z "${SYNC_DEPLOY_REPO:-}" ]]; then
-  SYNC_DEPLOY_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  SYNC_DEPLOY_REPO="$(cd "$SCRIPT_DIR" && git rev-parse --show-toplevel)"
   SELF_COPY="$(dirname "$SYNC_DEPLOY_REPO")/sync-deploy.sh"
+  HELPER_COPY="$(dirname "$SYNC_DEPLOY_REPO")/sync-deploy-upgrade_checks.py"
   cp "${BASH_SOURCE[0]}" "$SELF_COPY"
+  cp "$SCRIPT_DIR/upgrade_checks.py" "$HELPER_COPY"
   chmod +x "$SELF_COPY"
   log "Re-running from $SELF_COPY"
-  SYNC_DEPLOY_REPO="$SYNC_DEPLOY_REPO" exec "$SELF_COPY" "$@"
+  SYNC_DEPLOY_REPO="$SYNC_DEPLOY_REPO" SYNC_DEPLOY_HELPER="$HELPER_COPY" exec "$SELF_COPY" "$@"
 fi
+CHECKS=(python3 -I "$SYNC_DEPLOY_HELPER")
 
 # --- Preconditions -------------------------------------------------------------
 
@@ -117,7 +134,20 @@ git checkout -B "$DEPLOY_BRANCH" "$LATEST_TAG"
 for branch in "${DEPLOY_BRANCHES[@]}"; do
   log "Merging '$branch' into '$DEPLOY_BRANCH'"
   if ! git merge --no-ff --no-edit "$ORIGIN_REMOTE/$branch" -m "Merge '$branch' into $DEPLOY_BRANCH"; then
-    die "Conflict merging '$branch'. Resolve it manually (git status), then 'git add' + 'git commit', and re-run this script with the merge already in place, or fix and re-run from scratch after aborting with 'git merge --abort'."
+    UNMERGED="$(git diff --name-only --diff-filter=U)"
+    if [[ "$UNMERGED" == "uv.lock" ]]; then
+      # uv.lock is generated: take our side and re-lock against the merged
+      # pyproject.toml.
+      log "Only uv.lock conflicted - resolving by re-locking"
+      find_uv
+      git checkout --ours uv.lock
+      "$UV_BIN" lock
+      git add uv.lock
+      git commit --no-edit
+    else
+      git merge --abort
+      die "Conflict merging '$branch' in: $(echo $UNMERGED). Do NOT resolve this in the deploy branch (it is rebuilt from scratch on every run): merge $LATEST_TAG into '$branch', resolve it there, push '$branch' and re-run. Run scripts/upgrade-preflight.sh to see all conflicts at once. See scripts/UPGRADING.md."
+    fi
   fi
 done
 
@@ -133,56 +163,30 @@ done
 # re-lock.
 
 log "Checking for duplicate pyproject.toml dependency declarations"
-DEDUPE_OUTPUT=$(python3 - <<'PYEOF'
-import re
-
-path = "pyproject.toml"
-with open(path) as f:
-    lines = f.readlines()
-
-start = end = None
-for i, line in enumerate(lines):
-    if line.strip().startswith("dependencies = ["):
-        start = i
-    elif start is not None and end is None and line.strip() == "]":
-        end = i
-        break
-
-name_re = re.compile(r'^\s*"([A-Za-z0-9_.\-]+)')
-seen = set()
-out = []
-removed = []
-for i, line in enumerate(lines):
-    if start is not None and end is not None and start < i < end:
-        m = name_re.match(line)
-        if m:
-            name = m.group(1).lower()
-            if name in seen:
-                removed.append(line.strip())
-                continue
-            seen.add(name)
-    out.append(line)
-
-if removed:
-    with open(path, "w") as f:
-        f.writelines(out)
-    for r in removed:
-        print(r)
-PYEOF
-)
+DEDUPE_OUTPUT=$("${CHECKS[@]}" dedupe-deps)
 
 if [[ -n "$DEDUPE_OUTPUT" ]]; then
   log "Removed duplicate dependency declaration(s), re-locking:"
   echo "$DEDUPE_OUTPUT" | sed 's/^/  - /'
-  UV_BIN="$(command -v uv || true)"
-  [[ -n "$UV_BIN" ]] || UV_BIN="$HOME/.local/bin/uv"
-  [[ -x "$UV_BIN" ]] || die "uv not found (checked PATH and \$HOME/.local/bin/uv) - needed to re-lock after removing a duplicate dependency."
+  find_uv
   "$UV_BIN" lock
   git add pyproject.toml uv.lock
   git commit -m "Dedupe pyproject.toml dependencies after branch merge
 
 Two of the merged branches declared the same dependency with different
 version constraints; keep the first (topmost) declaration and re-lock."
+fi
+
+# --- Sanity checks on the merged result --------------------------------------
+
+log "Checking merged result"
+find_uv
+"$UV_BIN" lock --check || die "uv.lock does not match pyproject.toml."
+"${CHECKS[@]}" enum-dupes "$LATEST_TAG" || die "Duplicate enum values (silent aliases!) - probably a fork value collides with a new upstream one. Renumber the fork value (fork values live at 1000+)."
+if ! "${CHECKS[@]}" alembic-heads; then
+  [[ "$ALLOW_MULTIPLE_ALEMBIC_HEADS" -eq 1 ]] \
+    || die "Multiple alembic heads. Either add a merge migration in the branch owning the fork migrations, or switch the migration container to 'alembic upgrade heads' and set ALLOW_MULTIPLE_ALEMBIC_HEADS=1."
+  log "Multiple alembic heads allowed (ALLOW_MULTIPLE_ALEMBIC_HEADS=1)"
 fi
 
 if [[ "$DO_PUSH" -eq 1 ]]; then
