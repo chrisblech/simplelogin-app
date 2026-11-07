@@ -10,8 +10,16 @@ scripts/upgrade-preflight.sh --test     # Probelauf: Merges, Checks, Migrationen
 # ... gemeldete Probleme in den Feature-Branches lösen und pushen,
 #     ggf. vorher lokal prüfen mit: scripts/upgrade-preflight.sh --local --test
 scripts/sync-deploy.sh                  # echter Lauf: Merge, Checks, Push, Image
-# Image-Tag vX.Y.Z-cb in Portainer setzen
+# Deployment (Stack wird mit Arcane verwaltet, Definition liegt im Dateisystem):
+docker exec sl-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /dumps/pre-vX.Y.Z-cb.dump'
+cd /opt/arcane-projects/simplelogin
+sed -i 's/^SL_VERSION=.*/SL_VERSION=vX.Y.Z-cb/' .env
+docker compose -p simplelogin pull migration && docker compose -p simplelogin up -d
+docker logs sl-migration     # "Running upgrade ..." ohne Fehler
 ```
+
+Hinweis: SQL per Heredoc an `psql` braucht `docker exec -i`, sonst wird es
+still ignoriert.
 
 ## Werkzeuge
 
@@ -50,8 +58,9 @@ still einen Alias daraus (falsche Audit-Logs). Deshalb:
   Upstreams eigene, beabsichtigte Aliase werden ignoriert.
 
 Historie: bis v4.83.1 war `upgrade_lifetime = 20`; v4.83.5 belegt 20 mit
-`delete_mailbox`. Seit v4.83.5 ist `upgrade_lifetime = 1000`. Einmalig beim
-Deploy von v4.83.5-cb (bevor jemand über das Admin-Panel eine Mailbox löscht):
+`delete_mailbox`. Seit v4.83.5 ist `upgrade_lifetime = 1000`. Beim Deploy
+von v4.83.5-cb wurden die 4 bestehenden Zeilen umgestellt (erledigt
+2026-11-07):
 ```sql
 UPDATE admin_audit_log SET action = 1000 WHERE action = 20;
 ```
@@ -75,20 +84,16 @@ und loggen über `AdminAuditLog`-Classmethods (`upgrade_lifetime`,
 
 ### Alembic: mehrere Heads
 `feature/user-blacklists` hat eigene Migrationen. Mit jedem Upstream-Release,
-das neue Migrationen mitbringt, entsteht ein zweiter Head. Prod führt
-Migrationen im Container `sl-migration` mit `alembic upgrade head` (Singular)
-aus; bei zwei Heads schlägt das fehl.
+das neue Migrationen mitbringt, entsteht ein zweiter Head.
 
-- **Empfohlen (einmalig):** im Portainer-Stack beim `sl-migration`-Command
-  `alembic upgrade head` → `alembic upgrade heads` ändern und in
-  `sync-deploy.sh` `ALLOW_MULTIPLE_ALEMBIC_HEADS=1` setzen. Dann braucht es
-  keine Merge-Migrationen mehr. `upgrade heads` funktioniert auch bei nur
-  einem Head, die Umstellung ist also jederzeit gefahrlos.
-- **Bis dahin:** im Blacklist-Branch eine leere Merge-Migration mit beiden
-  Heads als `down_revision` anlegen (Vorlage:
-  `*_merge_partner_user_indices_with_sender_blacklist.py`). Merge-Migrationen
-  dürfen nicht automatisch im Deploy-Branch erzeugt werden: Ihre Revision
-  landet in `alembic_version` und muss im nächsten Deploy weiter existieren.
+**Gelöst seit v4.83.5-cb:** `sl-migration` in
+`/opt/arcane-projects/simplelogin/compose.yaml` führt `alembic upgrade heads`
+(Plural) aus, und `sync-deploy.sh` hat `ALLOW_MULTIPLE_ALEMBIC_HEADS=1`.
+Mehrere Heads sind damit ok, **es braucht keine Merge-Migrationen mehr**.
+(Bei neuen Migrationen im Blacklist-Branch `alembic revision --head <head>`
+angeben.) Merge-Migrationen dürften ohnehin nicht automatisch im
+Deploy-Branch erzeugt werden: Ihre Revision landet in `alembic_version` und
+muss im nächsten Deploy weiter existieren.
 
 ### Bereits upstream gemergte Branches
 Wenn ein eigener Fix upstream übernommen wurde (z. B. `fix_oidc_scopes` in
@@ -103,8 +108,13 @@ v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
 - Neue Upstream-Migrationen vor dem Deploy ansehen (Extensions wie
   `pg_trgm`, `CREATE INDEX CONCURRENTLY`, Datenmigrationen). Der Preflight
   listet sie gegenüber dem zuletzt deployten Release auf.
-- Sender-Blacklist-Muster werden per `fullmatch` geprüft: `.*@spam\.test`,
-  nicht `@spam\.test$`.
+- Sender-Blacklist: der Code prüft seit `203f8dda` per `fullmatch`, der
+  Admin-Hilfetext und die Prod-Daten verwenden aber Such-Muster
+  (`@domain\.tld$`), die damit nie greifen. Stand 2026-11-07 offen, siehe
+  Verlauf.
+- `ERROR ... Prometheus metrics are not enabled: METRICS_SERVER_PORT is not set`
+  in sl-email/sl-job-runner seit v4.83.5 ist nur Info (Upstream loggt das als
+  ERROR), solange keine Metriken gewünscht sind.
 
 ## Verlauf
 
@@ -112,4 +122,4 @@ v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
 |----------|----------------|
 | v4.82.3  | `fix_oidc_scopes` upstream gemergt, aus Liste entfernt |
 | v4.83.1  | Alembic-Merge (FIDO/Blacklist, Email-Canonical-Indizes); Import-Konflikt admin-create-user manuell im Deploy-Branch |
-| v4.83.5  | Alembic-Merge (partner_user-Indizes); Enum-Kollision 20 → `upgrade_lifetime = 1000` + Daten-Update; Import-Konflikt dauerhaft im Bulk-Branch gelöst; Blacklist-Branch ohne eigene Dependency; `prometheus-client` neu; Tests brauchen Redis; Preflight-Skript + Checks in sync-deploy eingeführt |
+| v4.83.5  | Deployt 2026-11-07 via Arcane. Alembic-Merge (partner_user-Indizes), danach Umstellung auf `upgrade heads`; Enum-Kollision 20 → `upgrade_lifetime = 1000` + Daten-Update; Import-Konflikt dauerhaft im Bulk-Branch gelöst; Blacklist-Branch ohne eigene Dependency; `prometheus-client` neu; Tests brauchen Redis; Preflight-Skript + Checks in sync-deploy eingeführt |
