@@ -10,14 +10,17 @@ from app.models import Referral
 from app.session import set_session_sudo_mode
 
 
-def after_login(user, next_url, login_from_proton: bool = False):
+def after_login(
+    user, next_url, login_from_proton: bool = False, skip_mfa: bool = False
+):
     """
     Redirect to the correct page after login.
     If the user is logged in with Proton, do not look at fido nor otp
+    Same if skip_mfa is set (the identity provider already did MFA)
     If user enables MFA: redirect user to MFA page
     Otherwise redirect to dashboard page if no next_url
     """
-    if not login_from_proton:
+    if not login_from_proton and not skip_mfa:
         if user.fido_enabled():
             # Use the same session for FIDO so that we can easily
             # switch between these two 2FA option

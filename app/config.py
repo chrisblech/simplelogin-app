@@ -318,6 +318,14 @@ OIDC_CLIENT_ID = os.environ.get("OIDC_CLIENT_ID")
 OIDC_CLIENT_SECRET = os.environ.get("OIDC_CLIENT_SECRET")
 OIDC_SCOPES = os.environ.get("OIDC_SCOPES", "openid email profile").split()
 OIDC_NAME_FIELD = os.environ.get("OIDC_NAME_FIELD", "name")
+# Comma separated list of "amr" (Authentication Methods References, RFC 8176)
+# values. If the (signature-verified) ID token of an OIDC login contains one of
+# them, the identity provider already did a multi-factor authentication and the
+# SimpleLogin 2FA (TOTP/FIDO) step is skipped. Empty (default): never skip.
+# Example for authentik: OIDC_SKIP_MFA_AMR=mfa
+OIDC_SKIP_MFA_AMR = [
+    v.strip() for v in os.environ.get("OIDC_SKIP_MFA_AMR", "").split(",") if v.strip()
+]
 
 PROTON_CLIENT_ID = os.environ.get("PROTON_CLIENT_ID")
 PROTON_CLIENT_SECRET = os.environ.get("PROTON_CLIENT_SECRET")

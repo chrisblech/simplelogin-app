@@ -1,4 +1,9 @@
+import json
+from typing import Optional
+
 from flask import request, session, redirect, flash, url_for
+from jwcrypto import jwk, jwt
+from jwcrypto.common import base64url_decode, base64url_encode
 from requests_oauthlib import OAuth2Session
 
 import requests
@@ -69,7 +74,7 @@ def oidc_callback():
         scope=OIDC_SCOPES,
         redirect_uri=redirect_uri,
     )
-    oidc.fetch_token(
+    token = oidc.fetch_token(
         token_url,
         client_secret=config.OIDC_CLIENT_SECRET,
         authorization_response=request.url,
@@ -117,7 +122,57 @@ def oidc_callback():
     next_url = session[SESSION_NEXT_KEY]
     session[SESSION_NEXT_KEY] = None
 
-    return after_login(user, next_url)
+    skip_mfa = _idp_did_mfa(token, oidc_configuration)
+    if skip_mfa:
+        LOG.i(f"OIDC login of {user} with MFA at the identity provider, skip 2FA")
+
+    return after_login(user, next_url, skip_mfa=skip_mfa)
+
+
+def _get_id_token_claims(token, oidc_configuration) -> Optional[dict]:
+    """Return the claims of the ID token in the token response, or None if
+    there is none or it cannot be verified (signature, iss, aud, exp)."""
+    id_token = token.get("id_token") if isinstance(token, dict) else None
+    if not id_token:
+        return None
+    try:
+        header = json.loads(base64url_decode(id_token.split(".")[0]))
+        if str(header.get("alg", "")).startswith("HS"):
+            # symmetric signature with the client secret
+            key = jwk.JWK(
+                kty="oct",
+                k=base64url_encode(config.OIDC_CLIENT_SECRET.encode()),
+            )
+        else:
+            jwks = requests.get(oidc_configuration["jwks_uri"], timeout=10)
+            key = jwk.JWKSet.from_json(jwks.text)
+        verified = jwt.JWT(
+            jwt=id_token,
+            key=key,
+            check_claims={
+                "iss": oidc_configuration["issuer"],
+                "aud": config.OIDC_CLIENT_ID,
+                "exp": None,
+            },
+        )
+        return json.loads(verified.claims)
+    except Exception as e:
+        LOG.w(f"cannot verify OIDC id_token: {e!r}")
+        return None
+
+
+def _idp_did_mfa(token, oidc_configuration) -> bool:
+    """Whether the verified ID token says that the identity provider did one of
+    the authentication methods configured in OIDC_SKIP_MFA_AMR."""
+    if not config.OIDC_SKIP_MFA_AMR:
+        return False
+    claims = _get_id_token_claims(token, oidc_configuration)
+    if not claims:
+        return False
+    amr = claims.get("amr") or []
+    if isinstance(amr, str):
+        amr = [amr]
+    return bool(set(amr) & set(config.OIDC_SKIP_MFA_AMR))
 
 
 def create_user(email, oidc_user_data):
