@@ -251,6 +251,11 @@ class AuditLogActionEnum(EnumE):
     change_default_mailbox = 19
     delete_mailbox = 20
 
+    # Fork-specific values live at 1000+ so that upstream's sequential
+    # numbering can never collide with them (a duplicate value would silently
+    # become an alias). Stored as int in admin_audit_log.action.
+    upgrade_lifetime = 1000
+
 
 class Phase(EnumE):
     unknown = 0
@@ -3961,6 +3966,26 @@ class AdminAuditLog(Base):
             model="User",
             model_id=user_id,
             data={},
+        )
+
+    @classmethod
+    def upgrade_lifetime(cls, admin_user_id: int, user_id: int):
+        cls.create(
+            admin_user_id=admin_user_id,
+            action=AuditLogActionEnum.upgrade_lifetime.value,
+            model="User",
+            model_id=user_id,
+            data={},
+        )
+
+    @classmethod
+    def delete_user(cls, admin_user_id: int, user_id: int, data: dict):
+        cls.create(
+            admin_user_id=admin_user_id,
+            action=AuditLogActionEnum.delete_object.value,
+            model="User",
+            model_id=user_id,
+            data=data,
         )
 
     @classmethod
