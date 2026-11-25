@@ -99,6 +99,16 @@ muss im nächsten Deploy weiter existieren.
 Wenn ein eigener Fix upstream übernommen wurde (z. B. `fix_oidc_scopes` in
 v4.82.3), den Branch aus `DEPLOY_BRANCHES` entfernen.
 
+### 2FA bei OIDC-Login (`feature/oidc-skip-mfa-amr`)
+Upstream überspringt die SimpleLogin-2FA nur beim Proton-Login. Der Branch
+ergänzt `OIDC_SKIP_MFA_AMR` (kommagetrennte `amr`-Werte nach RFC 8176): Steht
+einer davon im **verifizierten** ID-Token (Signatur per JWKS bzw. bei HS* per
+Client-Secret, dazu `iss`, `aud`, `exp`), entfällt TOTP/FIDO. Leer = Upstream-
+Verhalten. Authentik setzt `pwd`, `mfa` (MFA-Gerät validiert), `user`
+(passwortloses WebAuthn), `sc` (Zertifikat). Für uns: `OIDC_SKIP_MFA_AMR=mfa`
+in `/opt/arcane-projects/simplelogin/.env`. Berührt nur `app/auth/views/oidc.py`,
+`login_utils.py`, `app/config.py` – bei Konflikten dort zuerst hier schauen.
+
 ## Sonstiges
 
 - Tests brauchen seit v4.83.x zusätzlich **Redis** auf `localhost:6379`

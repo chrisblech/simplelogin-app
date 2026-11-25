@@ -28,6 +28,7 @@ DEPLOY_BRANCHES=(
   "fix/uv-lock-protobuf-conflict"
   "feature/admin-user-bulk-delete-lifetime"
   "feature/admin-create-user"
+  "feature/oidc-skip-mfa-amr"
 )
 
 # 1 = the migration container runs `alembic upgrade heads` (plural; set in
